@@ -1,0 +1,958 @@
+* %let safe =;
+libname MHPDAT odbc dsn=user_name schema = dbo;
+libname meds "file_location";
+libname interns "file_location";
+libname temp "file_location";
+
+/* SQL MHPDAT */
+
+data interns.racexxwalk;
+set mhpdat.sdwrefrace;
+run;
+
+proc sql;
+	create table meds.pos (pw=&safe.) as
+	select Membernum, ServDate, POS, Fee
+	from mhpdat.sdwClaClaimLine
+	where (datepart(ServDate) >= '21DEC2018'd)
+	order by membernum
+	;
+quit;
+proc sql;
+	create table meds.bill (pw=&safe.) as
+	select Membernum, ServDate, billtype
+	from mhpdat.sdwClaClaim
+	where (datepart(ServDate) >= '21DEC2018'd)
+	order by membernum
+	;
+quit;
+
+proc sql;
+	create table interns.coclaim (pw=&safe.) as
+	select unique Membernum, ServDate, Claimnum, diag12
+	from mhpdat.sdwClaClaimLine
+	where (datepart(ServDate) >= '21DEC2018'd) AND anydigit(diag12) > 0 
+	order by membernum, servdate
+	;
+*perform left join;
+	create table interns.codiag (pw=&safe.) as
+	select y.*, x.* 
+	from interns.coclaim x left join mhpdat.sdwClaClaimAddDiag y
+	on x.claimnum = y.claimnum
+	where x.claimnum NE ''
+	;
+quit;
+
+proc sql;
+	create table interns.phaclaim (pw=&safe.) as
+	select Membernum, ServDate, NDC, TherapCat, DaysSupply, PaidAmt, PatientPaidAmt, LOB, GenericInd
+	from mhpdat.sdwPhaClaimLine
+	where (datepart(ServDate) >= '21DEC2018'd)
+	order by membernum
+	;
+quit;
+
+proc sql;
+	create table work.comorbadm (pw=&safe.) as
+	select Membernum, ServDate, AdmDiag
+	from mhpdat.sdwClaClaimLine
+	where (datepart(ServDate) >= '21DEC2018'd)
+	order by membernum
+	;
+quit;
+
+proc sort data = meds.codiag;
+by membernum serv_date;
+run;
+
+proc sort data = interns.phaclaim(pw = &safe.);
+by NDC;
+run;
+
+
+*___________________________________________________________________;
+
+/* Pharm Claims and Diagnoses */
+data meds.pharms;
+format serv_date Date9.;
+merge interns.phaclaim(pw = &safe.) meds.diabmeds meds.cardio meds.epilepsy meds.pulmonary meds.behavioral (pw=&safe.);
+by NDC;
+if missing(Category) OR missing(membernum) then delete;
+drop servdate;
+serv_date = datepart(ServDate);
+run;
+
+data meds.codiag;
+set interns.codiag;
+format serv_date Date9.;
+if missing(claimnum) then delete;
+* drop Poa13 Poa14 Poa15 Poa16 Poa17 Poa18 Poa19 Poa20 Poa21 Poa22 Poa23 Poa24 Poa25 Poa26 Poa27 Poa28 diag12 servdate;
+serv_date = datepart(ServDate);
+run;
+
+data meds.comorb;
+merge interns.comorb work.comorbadm;
+run;
+
+*mistakes were made in grabbing the original SQL datastep and the following code was used to correct that.;
+data meds.comorb2 (encrypt = YES pw = &safe.);
+merge meds.comorb1 meds.codiag;
+by membernum serv_date;
+if last.serv_date then output;
+run;
+
+
+data meds.memlist (encrypt = yes pw = &safe.);
+merge interns.diabetes_meds(in = mem) meds.diabetes (in = meds) ;
+if mem = 1 then output;
+by NDC;
+run;
+
+data meds.memlist;
+set med.memlist;
+where serv_date >= '21DEC2018'd;
+run;
+
+proc sort data = meds.memlist;
+by MemberNum NDC serv_date;
+run;
+
+/* POS and Billing */
+
+data work.posfixed (encrypt=yes pw=&safe.);
+set meds.pos (pw=&safe.);
+format serv_date DATE9.;
+by membernum;
+serv_date = datepart(ServDate);
+run;
+
+data meds.comorb1 (encrypt=yes pw=&safe.);
+set meds.comorb (pw = &safe.);
+format serv_date DATE9.;
+serv_date = datepart(ServDate);
+drop ServDate;
+run;
+
+data meds.posfixed (encrypt = yes pw = &safe.);
+merge meds.comorb1 work.posfixed;
+by membernum serv_date;
+if POS = '11' OR POS = '21' OR POS = '22' OR POS = '23' then output;
+run;
+
+data meds.billA (encrypt=yes pw=&safe.);
+set meds.bill (pw = &safe.);
+format serv_date DATE9.;
+serv_date = datepart(ServDate);
+if substr(billtype,1,3) = '011' OR substr(billtype,1,2) = '11' then output;
+run;
+
+proc sort data = meds.posfixed;
+by membernum Serv_date;
+run;
+
+proc sort data = meds.billa;
+by membernum Serv_date;
+run;
+
+data meds.posxbill (encrypt = YES pw = &safe.);
+merge meds.posfixed (pw = &safe.) meds.billa (in = bill pw = &safe.);
+by membernum serv_date;
+if missing(bill) then delete;
+run;
+
+*___________________________________________________________________;
+
+* Code is useful for calculating the intervals between specific meds by NDC first. 
+but has been rewritten. See anymeds code.;
+/*
+data meds.predref (encrypt = Yes pw= &safe.);
+set meds.memlist (pw = &safe.);
+format pred_refill DATE9.;
+if DaysSupply > 0 then pred_refill = serv_date + DaysSupply;
+else pred_refill = '';
+if pred_refill = '' then delete;
+run;
+
+data meds.serv_days (encrypt = Yes pw= &safe.);
+set meds.predref (pw= &safe.);
+by membernum NDC serv_date;
+d = lag(serv_date);
+if first.membernum OR first.NDC then prev_refill = 0;
+else prev_refill = (serv_date - d) - DaysSupply;
+drop d;
+if prev_refill = 0 then Time = 'On Time';
+else if prev_refill > 0 then Time = 'Late';
+else if prev_refill < 0 then Time = 'Early';
+if prev_refill > 180 OR prev_refill le 0 then delete;
+run;
+ */
+
+proc sort data = meds.memlist (pw = &safe.);
+by membernum serv_date;
+run;
+
+*Used to calculate the intervals between the last date. ;
+data diabmeds (encrypt = YES pw = &safe.);
+set meds.pharms (pw = &safe.);
+if dayssupply < 0 then delete;
+if Category = 'Diabetes' then output;
+run;
+
+data meds.diabmeds (encrypt = YES pw = &safe.);
+set diabmeds (pw = &safe.);
+format prev_fill_date Date9. Reference_Name $20.;
+by membernum serv_date;
+Reference_Name = scan(genericname,1, ' ');
+prev_fill_date = lag(serv_date);
+
+if first.membernum then no_med_interval = 0;
+	else no_med_interval = (serv_date - prev_fill_date) - Dayssupply;
+
+if no_med_interval le 0 then Compliance = 'Y';
+	else if no_med_interval > 0 then Compliance = 'N';
+
+drop NDC NDCNAME LOB GenericIND GenericName;
+if first.serv_date then output;
+run;
+
+/* by membernum serv_date;
+retain prev_fill_date prev_refill med_supply interval;
+*keep serv_date membernum Reference_Name dayssupply prev_refill Late;
+if missing(Membernum) then delete;
+if DaysSupply < 0 then delete;
+Reference_Name = scan(genericname,1, ' ');
+if first.membernum AND first.serv_date then do;
+    prev_refill = 0;
+    med_supply = dayssupply;
+prev_fill_date = serv_date;
+interval= .;
+goto gohere;
+end;
+if first.serv_date then do;
+last_med_supply = med_supply;
+    interval = serv_date-prev_fill_date;
+    med_supply = dayssupply;
+end;
+else med_supply = max(dayssupply,med_supply);
+if last.serv_date then do;
+no_med_interval=interval-last_med_supply;
+*if negative, member filled before med ran out;
+output;
+end;
+gohere:
+run; */
+
+* The next 4 lines must be ran AFTER code anymeds code before this line. Unless all intervals (-inf,inf) is needed.
+this code is to capture all late refills only.;
+
+/* Epilepsy */
+
+data epimeds (encrypt = YES pw = &safe.);
+set meds.pharms (pw = &safe.);
+if dayssupply < 0 then delete;
+if category = "Epilepsy" then output;
+run;
+
+data meds.epimeds (encrypt = YES pw = &safe.);
+set epimeds (pw = &safe.);
+format prev_fill_date Date9. Reference_Name $20.;
+by membernum serv_date;
+Reference_Name = scan(genericname,1, ' ');
+prev_fill_date = lag(serv_date);
+
+if first.membernum then no_med_interval = 0;
+	else no_med_interval = (serv_date - prev_fill_date) - Dayssupply;
+
+if no_med_interval le 0 then Compliance = 'Y';
+	else if no_med_interval > 0 then Compliance = 'N';
+
+drop NDC NDCNAME LOB GenericIND GenericName;
+if first.serv_date then output;
+run;
+
+
+
+/* Pulmonary */
+
+data pulmeds (encrypt = YES pw = &safe.);
+set meds.pharms (pw = &safe.);
+if dayssupply < 0 then delete;
+if category = "Pulmonary" then output;
+run;
+
+data meds.pulmeds (encrypt = YES pw = &safe.);
+set pulmeds (pw = &safe.);
+format prev_fill_date Date9. Reference_Name $20.;
+by membernum serv_date;
+Reference_Name = scan(genericname,1, ' ');
+prev_fill_date = lag(serv_date);
+
+if first.membernum then no_med_interval = 0;
+	else no_med_interval = (serv_date - prev_fill_date) - Dayssupply;
+
+if no_med_interval le 0 then Compliance = 'Y';
+	else if no_med_interval > 0 then Compliance = 'N';
+
+drop NDC NDCNAME LOB GenericIND GenericName;
+if first.serv_date then output;
+run;
+
+/* Cardio */
+
+data cardiomeds (encrypt = YES pw = &safe.);
+set meds.pharms (pw = &safe.);
+if dayssupply < 0 then delete;
+if Category = "Cardiovascular" then output;
+run;
+
+data meds.cardiomeds (encrypt = YES pw = &safe.);
+set cardiomeds (pw = &safe.);
+format prev_fill_date Date9. Reference_Name $20.;
+by membernum serv_date;
+Reference_Name = scan(genericname,1, ' ');
+prev_fill_date = lag(serv_date);
+
+if first.membernum then no_med_interval = 0;
+	else no_med_interval = (serv_date - prev_fill_date) - Dayssupply;
+
+if no_med_interval le 0 then Compliance = 'Y';
+	else if no_med_interval > 0 then Compliance = 'N';
+
+drop NDC NDCNAME LOB GenericIND GenericName;
+if first.serv_date then output;
+run;
+
+/* Behavioral */
+data behavemeds (encrypt = YES pw = &safe.);
+set meds.pharms (pw = &safe.);
+if dayssupply < 0 then delete;
+if category = "Behavioral" then output;
+run;
+
+data meds.behavemeds (encrypt = YES pw = &safe.);
+set behavemeds (pw = &safe.);
+format prev_fill_date Date9. Reference_Name $20.;
+by membernum serv_date;
+Reference_Name = scan(genericname,1, ' ');
+prev_fill_date = lag(serv_date);
+
+if first.membernum then no_med_interval = 0;
+	else no_med_interval = (serv_date - prev_fill_date) - Dayssupply;
+
+if no_med_interval le 0 then Compliance = 'Y';
+	else if no_med_interval > 0 then Compliance = 'N';
+
+drop NDC NDCNAME LOB GenericIND GenericName;
+if first.serv_date then output;
+run;
+
+
+/* Final Dataset */
+
+data meds.allmeds (encrypt = YES pw = &safe.);
+format Category $15.;
+merge meds.diabmeds (pw = &safe.) meds.epimeds (pw = &safe.) meds.cardiomeds (pw = &safe.) meds.behavemeds (pw = &safe.) meds.pulmeds (pw = &safe.) meds.posxbill (pw = &safe.) meds.comorb2 (pw = &safe.);
+by membernum serv_date;
+drop ServDate;
+run;
+
+data FinalMeds (encrypt = YES pw = &safe.);
+set meds.allmeds (pw = &safe.);
+diag1 = diag;
+drop diag;
+run;
+
+data meds.FinalMeds(encrypt = YES pw = &safe.);
+set finalmeds(pw = &safe.);
+format Diabetes Epilepsey Cardiovascular Pulmonary Behavioral $1.; 
+array diag{28};
+drop i LOB Therapcat NDC PaidAmt PatientPaidAmt GenericInd NDCName GenericName prev_refill ClaimNum dx class;
+Diabetes = 'N';
+Epilepsey = 'N';
+Cardiovascular = 'N';
+Pulmonary = 'N';
+Behavioral = 'N';
+do i = 1 to 28;
+	if substr(Diag{i},1,3) in('E10', 'E11', 'E13') then do;
+		Diabetes = 'Y';
+	goto skip;
+	end;
+		else if substr(diag{i},1,3) = 'G40' then do;
+			Epilepsey = 'Y';
+	goto skip;
+	end;
+		else if substr(diag{i},1,1) = 'I' then do;
+			Cardiovascular = 'Y';
+		goto skip;
+	end;
+		else if substr(diag{i},1,1) = 'J' then do;
+			Pulmonary = 'Y';
+	goto skip;
+	end;
+		else if substr(diag{i},1,1) = 'F' then do;
+			Behavioral = 'Y';
+	goto skip;
+	end;
+
+skip:
+
+end;
+
+if missing(no_med_interval) then delete;
+if serv_date = lag(serv_date) then delete;
+if POS = '21' AND anydigit(billtype) then admit = 1;
+	else admit = 0;
+run;
+
+data meds.CompY (encrypt = YES pw = &safe.) meds.CompN (encrypt = YES pw = &safe.);
+set meds.Finalmeds (pw = &safe.);
+if Compliance = 'Y' then output meds.CompY;
+else if Compliance = 'N' then output meds.CompN;
+run;
+
+data compy (encrypt = YES pw = &safe.);
+set meds.compy (pw = &safe.);
+by membernum serv_date;
+keep membernum Admission CompDays compliance AdmitComply;
+retain Admission CompDays;
+if first.membernum then do;
+	Admission = admit;
+	CompDays = dayssupply;
+end;
+
+else do;
+	Admission = sum(admit,Admission);
+	CompDays = sum(dayssupply,CompDays);
+
+end;
+
+if  CompDays = 0 then AdmitComply = (Admission / 1);
+	else AdmitComply = (Admission / CompDays);
+
+if last.membernum then output;
+run;
+
+data compn (encrypt = YES pw = &safe.);
+set meds.compn (pw = &safe.);
+by membernum serv_date;
+retain Admission CompDays;
+keep membernum Admission CompDays compliance AdmitComply;
+
+if first.serv_date then 
+if first.membernum then do;
+	Admission = admit;
+	CompDays = no_med_interval;
+end;
+
+else do;
+	Admission = sum(admit,Admission);
+	CompDays = sum(no_med_interval,CompDays);
+
+end;
+
+if  CompDays = 0 then AdmitComply = (Admission / 1);
+	else AdmitComply = (Admission / CompDays);
+
+if last.membernum then output;
+run;
+
+data meds.finalcomp (encrypt = YES pw = &safe.);
+set compy (pw = &safe.) compn (pw = &safe.);
+keep membernum Compliance Admission CompDays AdmitComply;
+run;
+proc sort data = meds.finalcomp (pw = &safe.);
+by membernum;
+run;
+
+title "Compliant with Medication";
+proc freq data = meds.compy;
+table admit*category;
+where Category = "Cardiovascular";
+run;
+
+title "Non-compliant with Medication";
+proc freq data = meds.compn;
+table admit*category;
+where Category = "Cardiovascular";
+run;
+
+data tempadmit;
+set meds.finalmeds;
+if admit = 1 then output;
+run;
+
+data memdem;
+set meds.finalmeds(pw = &safe.);
+by membernum;
+if first.membernum then output;
+keep membernum;
+run;
+
+proc sort data = meds.memdem2;
+by membernum;
+run;
+
+data meds.memdem(encrypt = YES pw = &safe.);
+merge memdem(in = mem) interns.member;
+format birth_date Date9.;
+by membernum;
+drop CIN SSN UniqMemberNum LastName FirstName MI MembStat DisReason;
+if mem = 1 then output;
+run;
+
+ /* data members (encrypt = YES pw = &safe.);
+set meds.finalmeds (pw = &safe.);
+by membernum;
+run; */
+
+data members (encrypt = YES pw = &safe.);
+merge meds.finalmeds(in=mems pw = &safe.) meds.memdem2 (pw = &safe.);
+by membernum;
+Age = intck('Year',birth_date, today());
+if mems = 0 then delete;
+if first.membernum then output;
+drop serv_date Category diag1-diag28 class dx admit POS Billtype prev_fill_date DaysSupply no_med_interval 
+	 Diabetes Epilepsey Cardiovascular Pulmonary Behavioral Compliance AdmDiag Reference_Name birth_date;
+run;
+
+data comorbs;
+set meds.FinalMeds (pw = &safe.);
+array diag{28};
+format dx $8.; /* we have to define the varible first*/
+Do cnt=1 to 28 by 1; /* the loop is by row not the column. for one record, it has to run through 1 to 28 and then it will turn to next record*/
+      if anydigit(diag[cnt])>0 then do; /*it is about where the first digit locates, if bigger than 0, it means it has the digit. if not, have to end the first loop (we cannot even enter the second loop), and then the cnt will add 1 to check next column variable*/
+            dx=diag(cnt);/*is the value of this variable not the variable name*/
+            rootdx=scan(dx,1);            
+            
+      end;
+end;
+
+if substr(dx,1,1) = 'Z' then delete;
+*keep dx;/*it works if we put 'keep dx' here*/
+
+run;
+proc sort data = comorbs;
+by dx;
+run;
+
+data comorbD comorbE comorbC comorbP comorbB;
+set comorbs;
+by dx;
+if Category = "Diabetes" then output comorbD;
+if Category = "Epilepsy" then output comorbE;
+if Category = "Cardiovascular" then output comorbC;
+if Category = "Pulmonary" then output comorbP;
+if Category = "Behavioral" then output comorbB;
+
+run;
+
+proc freq data = comorbD noprint;
+tables dx*Compliance /nocum nopercent out=dxxtableD;
+run;
+proc sort data = dxxtableD;
+by dx;
+run;
+data dxxtableD;
+merge dxxtableD(in = x) interns.dxxwalk (in = y rename=(diag=dx));
+by dx;
+if x then output;
+run;
+proc sort data = dxxtableD;
+by descending count;
+run;
+
+proc freq data = comorbE noprint;
+tables dx*Compliance /nocum nopercent out=dxxtableE;
+run;
+proc sort data = dxxtableE;
+by dx;
+run;
+data dxxtableE;
+merge dxxtableE(in = x) interns.dxxwalk (in = y rename=(diag=dx));
+by dx;
+if x then output;
+run;
+proc sort data = dxxtableE;
+by descending count;
+run;
+
+proc freq data = comorbC noprint;
+tables dx*Compliance /nocum nopercent out=dxxtableC;
+run;
+proc sort data = dxxtableC;
+by dx;
+run;
+data dxxtableC;
+merge dxxtableC (in = x) interns.dxxwalk (in = y rename=(diag=dx));
+by dx;
+if x then output;
+run;
+proc sort data = dxxtableC;
+by descending count;
+run;
+
+proc freq data = comorbP order = freq;
+tables dx*Compliance /nocum nopercent chisq;
+run;
+proc sort data = dxxtableP;
+by dx;
+run;
+data dxxtableP;
+merge dxxtableP (in = x) interns.dxxwalk (in = y rename=(diag=dx));
+by dx;
+if x then output;
+run;
+
+proc sort data = dxxtableP;
+by descending count;
+run;
+
+proc freq data = comorbb;
+table dx*compliance / nocum nopercent chisq;
+run;
+
+data dxxtableB;
+merge dxxtableB (in=x) interns.dxxwalk (in = y rename=(diag=dx));
+by dx;
+if x then output;
+drop percent;
+run;
+proc sort data = dxxtableB;
+by descending count;
+run;
+
+
+
+ods pdf file="h:\um\um_shared\dr. Ronald Low\interns\meds\AllcomorbsYN.pdf";
+
+title "Frequency of Comorbidities [Diabetes]";
+proc print data = dxxtableD (obs = 100);
+var diaggrpiii dx compliance count diagdesc;
+run;
+
+title "Frequency of Comorbidities [Epilepsy]";
+proc print data = dxxtableE (obs = 100);
+var diaggrpiii dx compliance count diagdesc;
+run;
+
+title "Frequency of Comorbidities [Cardiovscular]";
+proc print data = dxxtableC (obs = 100);
+var diaggrpiii dx compliance count diagdesc;
+run;
+
+title "Frequency of Comorbidities [Pulmonary]";
+proc print data = dxxtableP (obs = 100);
+var diaggrpiii dx compliance count diagdesc;
+run;
+
+title "Frequency of Comorbidities [Behavioral]";
+proc print data = dxxtableB (obs = 100);
+var diaggrpiii dx compliance count diagdesc;
+run;
+
+ods pdf close;
+
+/* Table Fix YN */
+
+proc sort data = dxxtableD;
+by dx compliance;
+run;
+proc transpose data = dxxtableD out = yndxxtableD;
+by dx;
+id compliance;
+var count;
+run;
+data yndxxtableD ;
+set yndxxtableD;
+keep dx N Y;
+if missing(N) then N = 0;
+if missing(Y) then Y = 0;
+run; 
+data yndxxtableD (obs = 100);
+merge yndxxtableD(in=x) interns.dxxwalk (in = z rename=(diag=dx));
+by dx;
+if x then output;
+run;
+proc sort data = yndxxtableD;
+by descending Y descending N dx;
+run;
+
+
+proc sort data = dxxtableC;
+by dx compliance;
+run;
+proc transpose data = dxxtableC out = yndxxtableC;
+by dx;
+id compliance;
+var count;
+run;
+data yndxxtableC ;
+set yndxxtableC;
+keep dx N Y;
+if missing(N) then N = 0;
+if missing(Y) then Y = 0;
+run; 
+data yndxxtableC (obs = 100);
+merge yndxxtableC(in=x) interns.dxxwalk (in = z rename=(diag=dx));
+by dx;
+if x then output;
+run;
+proc sort data = yndxxtableC;
+by descending Y descending N dx;
+run;
+
+
+proc sort data = dxxtableE;
+by dx compliance;
+run;
+proc transpose data = dxxtableE out = yndxxtableE;
+by dx;
+id compliance;
+var count;
+run;
+data yndxxtableE ;
+set yndxxtableE;
+keep dx N Y;
+if missing(N) then N = 0;
+if missing(Y) then Y = 0;
+run; 
+data yndxxtableE (obs = 100);
+merge yndxxtableE(in=x) interns.dxxwalk (in = z rename=(diag=dx));
+by dx;
+if x then output;
+run;
+proc sort data = yndxxtableE;
+by descending Y descending N dx;
+run;
+
+
+proc sort data = dxxtableP;
+by dx compliance;
+run;
+proc transpose data = dxxtableP out = yndxxtableP;
+by dx;
+id compliance;
+var count;
+run;
+data yndxxtableP ;
+set yndxxtableP;
+keep dx N Y;
+if missing(N) then N = 0;
+if missing(Y) then Y = 0;
+run; 
+data yndxxtableP (obs = 100);
+merge yndxxtableP(in=x) interns.dxxwalk (in = z rename=(diag=dx));
+by dx;
+if x then output;
+run;
+proc sort data = yndxxtableP;
+by descending Y descending N dx;
+run;
+
+
+proc sort data = dxxtableB;
+by dx compliance;
+run;
+proc transpose data = dxxtableB out = yndxxtableB;
+by dx;
+id compliance;
+var count;
+run;
+data yndxxtableB ;
+set yndxxtableB;
+keep dx N Y;
+if missing(N) then N = 0;
+if missing(Y) then Y = 0;
+run; 
+data yndxxtableB (obs = 100);
+merge yndxxtableB(in=x) interns.dxxwalk (in = z rename=(diag=dx));
+by dx;
+if x then output;
+run;
+proc sort data = yndxxtableB;
+by descending Y descending N dx;
+run;
+
+proc freq data = yndxxtableB;
+tables Y N / chisq;
+by dx;
+run;
+
+ods pdf file="h:\um\um_shared\dr. Ronald Low\interns\meds\YNComorbs.pdf";
+
+title "Frequency of Comorbidities [Diabetes]";
+proc print data = YNdxxtableD (obs = 100);
+var diaggrpiii Y N dx  diagdesc;
+run;
+
+title "Frequency of Comorbidities [Epilepsy]";
+proc print data = YNdxxtableE (obs = 100);
+var diaggrpiii Y N dx  diagdesc;
+run;
+
+title "Frequency of Comorbidities [Cardiovscular]";
+proc print data = YNdxxtableC (obs = 100);
+var diaggrpiii Y N dx  diagdesc;
+run;
+
+title "Frequency of Comorbidities [Pulmonary]";
+proc print data = YNdxxtableP (obs = 100);
+var diaggrpiii Y N dx  diagdesc;
+run;
+
+title "Frequency of Comorbidities [Behavioral]";
+proc print data = YNdxxtableB (obs = 100);
+var diaggrpiii Y N dx  diagdesc;
+run;
+
+
+ods pdf close;
+
+data meds.FinalModelD (encrypt = YES pw=&safe.);
+merge members (pw = &safe.) meds.finalcompD(pw = &safe.) ;
+by membernum;
+if missing(median_income) OR missing(compdays) or compdays < 0 then delete;
+run;
+
+data meds.FinalModelE (encrypt = YES pw=&safe.);
+merge members (pw = &safe.) meds.finalcompE(pw = &safe.) ;
+by membernum;
+if missing(median_income) OR missing(compdays) or compdays < 0 then delete;
+run;
+
+data meds.FinalModelC (encrypt = YES pw=&safe.);
+merge members (pw = &safe.) meds.finalcompC(pw = &safe.) ;
+by membernum;
+if missing(median_income) OR missing(compdays) or compdays < 0 then delete;
+run;
+
+data meds.FinalModelP (encrypt = YES pw=&safe.);
+merge members (pw = &safe.) meds.finalcompP(pw = &safe.) ;
+by membernum;
+if missing(median_income) OR missing(compdays) or compdays < 0 then delete;
+run;
+
+data meds.FinalModelB (encrypt = YES pw=&safe.);
+merge members (pw = &safe.) meds.finalcompB(pw = &safe.) ;
+by membernum;
+if missing(median_income) OR missing(compdays) or compdays < 0 then delete;
+run;
+
+
+ods pdf file="h:\um\um_shared\dr. Ronald Low\interns\meds\admission.pdf";
+title "Frequency of Admission (Dec 2018 ~ June 2022)";
+
+proc freq data = meds.finalcomp (pw = &safe.) order=freq;
+table AdmitComply;
+run;
+
+proc freq data = meds.admem (pw = &safe.);
+table zip;
+where Category = 'Cardiovascular' AND admit = 1;
+run;
+
+title "Admitted by Poverty Percent [Compliant]";
+proc freq data = meds.admem (pw = &safe.);
+table poverty_grp;
+where Category = 'Cardiovascular' AND admit = 1 AND Compliance = "Y";
+run;
+
+title "Admitted by Poverty Percent [Non-Compliant]";
+proc freq data = meds.admem (pw = &safe.);
+table poverty_grp;
+where Category = 'Cardiovascular' AND admit = 1 AND Compliance = "N";
+run;
+
+title "Admitted by Race and Sex [Compliant]";
+proc freq data = meds.admem (pw = &safe.);
+table Race*Sex/
+	plots=freqplot(twoway = stacked orient = horizontal scale = percent);
+where Category = 'Cardiovascular' AND admit = 1 AND Compliance = "N";
+run;
+
+title "Admitted by Race and Sex [Non-Compliant]";
+proc freq data = meds.admem (pw = &safe.);
+table Race*Sex / 
+	plots=freqplot(twoway = stacked orient = horizontal scale = percent);
+where Category = 'Cardiovascular' AND admit = 1 AND Compliance = "Y";
+run;
+
+ods pdf close;
+
+/*Models and Tables*/
+
+/*change format of date and paidamttotal*/
+data meds(encrypt = yes pw = &safe.);
+set meds.allmeds(PW = &safe.);
+format serv_date date9. diag1-diag28 $8.;
+diag1 = diag;
+drop diag;
+run;
+
+data diagst;
+set meds(pw = &safe.);
+format dx $8.; /* we have to define the varible first*/
+array diag{28};
+keep dx rootdx;
+Do cnt=1 to 28 by 1; /* the loop is by row not the column. for one record, it has to run through 1 to 12 and then it will turn to next record*/
+      if anydigit(diag[cnt])>0 then do; /*it is about where the first digit locates, if bigger than 0, it means it has the digit. if not, have to end the first loop (we cannot even enter the second loop), and then the cnt will add 1 to check next column variable*/
+            dx=diag(cnt);/*is the value of this variable not the variable name*/
+            rootdx=scan(dx,1);            
+            * output;
+      end;
+end;
+*keep dx;/*it works if we put 'keep dx' here*/
+run;
+
+data meds.diagst;
+set diagst;
+format Class $15.;
+if substr(rootdx,1,3) = 'E10' OR substr(rootdx,1,3) = 'E11' OR substr(rootdx,1,3) = 'E13' then Class = 'Diabetes';
+if substr(rootdx,1,3) = 'G40' then Class = 'Epilepsey';
+if substr(rootdx,1,1) = 'F' then Class = 'Behavioral';
+if substr(rootdx,1,1) = 'I' then Class = 'Cardiovascular';
+if substr(rootdx,1,1) = 'J' then Class = 'Pulmonary';
+run;
+
+/*create freq table for diagst and then give it a title*/
+proc freq data=meds.diagst;
+title "Distribution of Diagnoses";
+tables dx/nocum out=dxxtable;
+tables rootdx/nocum out=rootable;
+run;
+
+proc sort data=interns.dxxwalk;
+by diag;
+run;
+
+proc sort data=dxxtable;
+by dx;
+run;
+
+data dxtable;
+merge dxxtable(in=x drop=percent) interns.dxxwalk(in=y rename=(diag=dx));
+by dx;
+if x then output;
+run;
+
+proc sort data=dxtable;
+by descending count;
+run;
+
+ods pdf file="file_location";
+title "Comorbidities of Patients";
+proc print data=dxtable;
+var diaggrpiii dx count diagdesc;
+run;
+ods pdf close;
+
+proc univariate data = meds.serv_days (pw = &safe.) plots(maxpoints = 9999);
+var prev_refill;
+histogram;
+run;
+
+title;
+
+proc logistic data = meds.FinalModel;
+model Admit =  ;
+run;
