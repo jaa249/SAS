@@ -1,7 +1,7 @@
-libname HW "C:\Users\ayoo-\OneDrive\Documents\Data_Science\SAS\BIOST2066";
+libname HW "file_location";
 ods graphics on;
 
-proc import datafile = 'C:\Users\ayoo-\OneDrive\Documents\Data_Science\SAS\BIOST2066\Recid.csv'
+proc import datafile = 'file_location\Recid.csv'
  out = work.Recid
  dbms = csv REPLACE;
 run;
