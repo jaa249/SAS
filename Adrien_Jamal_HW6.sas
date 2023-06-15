@@ -1,15 +1,15 @@
 data ED2010;
-infile'C:\Users\ayoo-\Desktop\BIOST2093\ED2010' missover lrecl=9999;
+infile 'file_location\ED2010' missover lrecl=9999;
 input @103 Diag1 $char3. @4 Age 3. @21 Sex 1. @36 Pay 2.;
 run;
 
 data OPD2010;
-infile'C:\Users\ayoo-\Desktop\BIOST2093\OPD2010' missover lrecl=9999;
+infile 'file_location\OPD2010' missover lrecl=9999;
 input @51 Diag1 $char3. @164 Proc1 $char4. @4 Age 3. @7 Sex 1. @20 Pay 2.;
 run;
 
 data NAMCS2010;
-infile 'C:\Users\ayoo-\Desktop\BIOST2093\NAMCS2010' missover lrecl=9999;
+infile 'file_location\NAMCS2010' missover lrecl=9999;
 input @55 Diag1 $char3. @168 Proc1 $char4. @8 Age 3. @11 Sex 1. @24 Pay 2.;
 run;
 
@@ -55,7 +55,7 @@ value pay (multilabel)
 1 = 'Private Insurance'
 2 = 'Medicare'
 3 = 'Medicaid'
-4 = 'Worker’s Compensation'
+4 = 'Workerâ€™s Compensation'
 5 = 'Self-Pay'
 6 = 'No Charge'
 7 = 'Other'
@@ -81,7 +81,7 @@ set hw6.formatlabel;
 where proc in (1,2,3,4);
 run;
 
-ODS PDF file='C:\Users\ayoo-\Desktop\BIOST2093\Adrien_Jamal_HW6.pdf'
+ODS PDF file='file_location\Adrien_Jamal_HW6.pdf'
 style = Analysis;
 
 *Infections*;
