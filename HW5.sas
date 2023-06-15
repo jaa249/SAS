@@ -1,7 +1,7 @@
-libname HW "C:\Users\ayoo-\OneDrive\Documents\Data_Science\SAS\BIOST2066";
+libname HW "file_location";
 ods graphics on;
 DATA  gtsg;
-INFILE  "C:\Users\ayoo-\OneDrive\Documents\Data_Science\SAS\BIOST2066\GTSG_LONG.txt" firstobs=2;
+INFILE  "file_location\GTSG_LONG.txt" firstobs=2;
 INPUT obs t trt c;
 drop obs;
 run;
