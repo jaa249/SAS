@@ -1,8 +1,8 @@
-libname HW "C:\Users\ayoo-\OneDrive\Documents\Data_Science\SAS\BIOST2050";
+libname HW "file_location";
 ODS GRAPHICS/ MAXLEGENDAREA=100  WIDTH=200 HEIGHT=200 totalcellmax=3000;
 
 DATA  hw.egfr ;
-INFILE  "C:\Users\ayoo-\OneDrive\Documents\Data_Science\SAS\BIOST2050\egfr-1.csv" 
+INFILE  "file_location/egfr-1.csv" 
      DSD 
      LRECL= 41 firstobs=2;
 INPUT
